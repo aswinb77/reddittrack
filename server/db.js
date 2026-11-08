@@ -9,16 +9,33 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 const POSTS_FILE = path.join(DATA_DIR, 'posts.json');
 const CWD_POSTS_FILE = path.resolve(process.cwd(), 'data', 'posts.json');
 
-// Supabase Environment Variables
-const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+// Supabase Environment Variables & Sanitization
+function sanitizeSupabaseUrl(rawUrl) {
+  if (!rawUrl) return '';
+  let url = rawUrl.trim();
+  const supaMatch = url.match(/https?:\/\/([a-z0-9_-]+)\.supabase\.co/i);
+  if (supaMatch) {
+    return `https://${supaMatch[1]}.supabase.co`;
+  }
+  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
+  if (dashMatch) {
+    return `https://${dashMatch[1]}.supabase.co`;
+  }
+  return url.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
+}
+
+const rawSupabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const rawSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || '';
+
+export const supabaseUrl = sanitizeSupabaseUrl(rawSupabaseUrl);
+export const supabaseKey = rawSupabaseKey.trim();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 
 let supabase = null;
 if (isSupabaseConfigured) {
   supabase = createClient(supabaseUrl, supabaseKey);
-  console.log('[Database] Supabase client initialized connecting to cloud database');
+  console.log(`[Database] Supabase client initialized connecting to ${supabaseUrl}`);
 } else {
   console.log('[Database] Using local data/posts.json storage (Supabase env vars not set)');
 }
