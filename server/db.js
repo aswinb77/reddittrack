@@ -13,13 +13,20 @@ const CWD_POSTS_FILE = path.resolve(process.cwd(), 'data', 'posts.json');
 function sanitizeSupabaseUrl(rawUrl) {
   if (!rawUrl) return '';
   let url = rawUrl.trim();
+  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
+  if (dashMatch) {
+    return `https://${dashMatch[1]}.supabase.co`;
+  }
   const supaMatch = url.match(/https?:\/\/([a-z0-9_-]+)\.supabase\.co/i);
   if (supaMatch) {
     return `https://${supaMatch[1]}.supabase.co`;
   }
-  const dashMatch = url.match(/supabase\.com\/dashboard\/project\/([a-z0-9_-]+)/i);
-  if (dashMatch) {
-    return `https://${dashMatch[1]}.supabase.co`;
+  const bareRefMatch = url.match(/^(?:https?:\/\/)?([a-z0-9]{15,30})\/?$/i);
+  if (bareRefMatch) {
+    return `https://${bareRefMatch[1]}.supabase.co`;
+  }
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    url = 'https://' + url;
   }
   return url.replace(/\/rest\/v1\/?$/, '').replace(/\/+$/, '');
 }
@@ -125,10 +132,18 @@ function writeLocalPosts(posts) {
 
 // Diagnostic helper
 export async function getDatabaseStatus() {
+  let hostname = null;
+  try {
+    hostname = supabaseUrl ? new URL(supabaseUrl).host : null;
+  } catch (e) {
+    hostname = supabaseUrl;
+  }
+
   const status = {
     configured: isSupabaseConfigured,
     provider: isSupabaseConfigured ? 'supabase' : 'local-json',
-    supabaseUrl: supabaseUrl ? `${supabaseUrl.slice(0, 25)}...` : null,
+    supabaseHost: hostname,
+    supabaseUrl: supabaseUrl || null,
     hasKey: Boolean(supabaseKey),
     keyType: supabaseKey ? (supabaseKey.startsWith('sb_') ? 'modern_sb' : (supabaseKey.startsWith('ey') ? 'jwt' : 'custom')) : null,
     error: null,
@@ -147,7 +162,8 @@ export async function getDatabaseStatus() {
         status.postsCount = count ?? (data ? data.length : 0);
       }
     } catch (e) {
-      status.error = e.message;
+      const cause = e.cause ? ` [cause: ${e.cause.code || ''} ${e.cause.message || ''}]` : '';
+      status.error = `${e.message}${cause}`;
     }
   } else {
     status.postsCount = readLocalPosts().length;
