@@ -27,6 +27,7 @@ export async function resolveRedditUrl(rawUrl) {
         headers: {
           'User-Agent': 'curl/8.4.0',
         },
+        signal: AbortSignal.timeout(4000),
       });
 
       const location = response.headers.get('location');
@@ -123,7 +124,7 @@ export async function fetchRedditPost(rawUrl, apiConfig = {}) {
           'User-Agent': 'curl/8.4.0',
           'Accept': '*/*',
         },
-        signal: AbortSignal.timeout(12000), // Generous 12s timeout
+        signal: AbortSignal.timeout(5000), // 5s fast timeout for serverless
       });
 
       if (!res.ok) {

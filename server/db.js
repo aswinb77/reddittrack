@@ -7,6 +7,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, '..', 'data');
 const POSTS_FILE = path.join(DATA_DIR, 'posts.json');
+const CWD_POSTS_FILE = path.resolve(process.cwd(), 'data', 'posts.json');
 
 // Supabase Environment Variables
 const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
@@ -17,21 +18,9 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 let supabase = null;
 if (isSupabaseConfigured) {
   supabase = createClient(supabaseUrl, supabaseKey);
-  console.log('[Database] Supabase client initialized connected to cloud database');
+  console.log('[Database] Supabase client initialized connecting to cloud database');
 } else {
   console.log('[Database] Using local data/posts.json storage (Supabase env vars not set)');
-}
-
-// Ensure local data directory exists if running locally
-try {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!fs.existsSync(POSTS_FILE)) {
-    fs.writeFileSync(POSTS_FILE, JSON.stringify([], null, 2), 'utf-8');
-  }
-} catch (e) {
-  // Ignored in serverless environments where local filesystem might be read-only
 }
 
 // Convert Supabase database row to frontend model
@@ -93,11 +82,12 @@ export function toDb(post) {
   };
 }
 
-// Local filesystem helpers
+// Local filesystem helpers with multiple path checks
 function readLocalPosts() {
   try {
-    if (!fs.existsSync(POSTS_FILE)) return [];
-    const raw = fs.readFileSync(POSTS_FILE, 'utf-8');
+    const targetFile = fs.existsSync(POSTS_FILE) ? POSTS_FILE : (fs.existsSync(CWD_POSTS_FILE) ? CWD_POSTS_FILE : null);
+    if (!targetFile) return [];
+    const raw = fs.readFileSync(targetFile, 'utf-8');
     return JSON.parse(raw);
   } catch (err) {
     console.error('[Storage] Error reading local posts:', err);
@@ -107,12 +97,46 @@ function readLocalPosts() {
 
 function writeLocalPosts(posts) {
   try {
-    fs.writeFileSync(POSTS_FILE, JSON.stringify(posts, null, 2), 'utf-8');
+    const targetFile = fs.existsSync(DATA_DIR) ? POSTS_FILE : CWD_POSTS_FILE;
+    fs.writeFileSync(targetFile, JSON.stringify(posts, null, 2), 'utf-8');
     return true;
   } catch (err) {
-    console.error('[Storage] Error writing local posts:', err);
+    console.error('[Storage] Error writing local posts (may be serverless):', err);
     return false;
   }
+}
+
+// Diagnostic helper
+export async function getDatabaseStatus() {
+  const status = {
+    configured: isSupabaseConfigured,
+    provider: isSupabaseConfigured ? 'supabase' : 'local-json',
+    supabaseUrl: supabaseUrl ? `${supabaseUrl.slice(0, 25)}...` : null,
+    hasKey: Boolean(supabaseKey),
+    keyType: supabaseKey ? (supabaseKey.startsWith('sb_') ? 'modern_sb' : (supabaseKey.startsWith('ey') ? 'jwt' : 'custom')) : null,
+    error: null,
+    postsCount: 0,
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data, error, count } = await supabase
+        .from('posts')
+        .select('*', { count: 'exact' });
+
+      if (error) {
+        status.error = `${error.message}. (If table doesn't exist, please run supabase_schema.sql in Supabase SQL Editor!)`;
+      } else {
+        status.postsCount = count ?? (data ? data.length : 0);
+      }
+    } catch (e) {
+      status.error = e.message;
+    }
+  } else {
+    status.postsCount = readLocalPosts().length;
+  }
+
+  return status;
 }
 
 // ==========================================
@@ -129,12 +153,12 @@ export async function getAllPosts() {
 
       if (error) {
         console.error('[Supabase] getAllPosts error:', error.message);
-        return readLocalPosts();
+        throw new Error(`Supabase query error: ${error.message}. Did you run supabase_schema.sql in Supabase SQL Editor?`);
       }
       return (data || []).map(fromDb);
     } catch (err) {
       console.error('[Supabase] getAllPosts exception:', err.message);
-      return readLocalPosts();
+      throw err;
     }
   }
   return readLocalPosts();
@@ -150,12 +174,12 @@ export async function getPostById(id) {
         .maybeSingle();
 
       if (error) {
-        console.error('[Supabase] getPostById error:', error.message);
-        return readLocalPosts().find(p => p.id === id) || null;
+        console.warn('[Supabase] getPostById warning:', error.message);
+        return null;
       }
       return data ? fromDb(data) : null;
     } catch (err) {
-      return readLocalPosts().find(p => p.id === id) || null;
+      return null;
     }
   }
   return readLocalPosts().find(p => p.id === id) || null;
@@ -172,7 +196,7 @@ export async function addPost(post) {
         .single();
 
       if (error) {
-        throw new Error(error.message);
+        throw new Error(`Failed to save post to Supabase: ${error.message}`);
       }
       return fromDb(data);
     } catch (err) {
@@ -191,7 +215,6 @@ export async function addPost(post) {
 export async function updatePost(id, updates) {
   if (isSupabaseConfigured && supabase) {
     try {
-      // Map update fields
       const dbUpdates = {};
       if (updates.title !== undefined) dbUpdates.title = updates.title;
       if (updates.accountTag !== undefined) dbUpdates.account_tag = updates.accountTag;
@@ -260,7 +283,7 @@ export async function clearAllPosts() {
       const { error } = await supabase
         .from('posts')
         .delete()
-        .neq('id', '___nonexistent___');
+        .neq('id', '___none___');
 
       if (error) throw new Error(error.message);
       return true;
@@ -272,25 +295,4 @@ export async function clearAllPosts() {
 
   writeLocalPosts([]);
   return true;
-}
-
-export async function bulkUpsertPosts(posts) {
-  if (isSupabaseConfigured && supabase) {
-    try {
-      const rows = posts.map(toDb);
-      const { data, error } = await supabase
-        .from('posts')
-        .upsert(rows, { onConflict: 'id' })
-        .select();
-
-      if (error) throw new Error(error.message);
-      return (data || []).map(fromDb);
-    } catch (err) {
-      console.error('[Supabase] bulkUpsertPosts error:', err.message);
-      throw err;
-    }
-  }
-
-  writeLocalPosts(posts);
-  return posts;
 }

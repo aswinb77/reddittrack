@@ -11,6 +11,7 @@ import {
   updatePost,
   deletePost,
   clearAllPosts,
+  getDatabaseStatus,
   isSupabaseConfigured,
 } from './db.js';
 
@@ -22,17 +23,20 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
-// Health check
-app.get('/api/health', (req, res) => {
+const router = express.Router();
+
+// Diagnostic Health check
+router.get('/health', async (req, res) => {
+  const dbStatus = await getDatabaseStatus();
   res.json({
     status: 'ok',
-    database: isSupabaseConfigured ? 'supabase' : 'local-json',
+    database: dbStatus,
     time: new Date().toISOString(),
   });
 });
 
 // GET all posts
-app.get('/api/posts', async (req, res) => {
+router.get('/posts', async (req, res) => {
   try {
     const posts = await getAllPosts();
     res.json({ success: true, count: posts.length, posts });
@@ -42,7 +46,7 @@ app.get('/api/posts', async (req, res) => {
 });
 
 // POST track a new post or batch of posts
-app.post('/api/posts', async (req, res) => {
+router.post('/posts', async (req, res) => {
   try {
     const { url, urls, accountTag, notes, manualData, initialScore } = req.body;
 
@@ -54,7 +58,7 @@ app.post('/api/posts', async (req, res) => {
         return res.status(409).json({
           success: false,
           alreadyExists: true,
-          error: `Post already exists: "${newPost.title}" is already tracked.`,
+          error: `Post already exists: "${manualData.title}" is already tracked.`,
         });
       }
 
@@ -164,7 +168,7 @@ app.post('/api/posts', async (req, res) => {
 });
 
 // PUT update post
-app.put('/api/posts/:id', async (req, res) => {
+router.put('/posts/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const updates = req.body;
@@ -180,7 +184,7 @@ app.put('/api/posts/:id', async (req, res) => {
 });
 
 // DELETE a post
-app.delete('/api/posts/:id', async (req, res) => {
+router.delete('/posts/:id', async (req, res) => {
   try {
     const { id } = req.params;
     await deletePost(id);
@@ -192,7 +196,7 @@ app.delete('/api/posts/:id', async (req, res) => {
 });
 
 // POST clear all posts
-app.post('/api/posts/clear', async (req, res) => {
+router.post('/posts/clear', async (req, res) => {
   try {
     await clearAllPosts();
     res.json({ success: true, count: 0 });
@@ -202,7 +206,7 @@ app.post('/api/posts/clear', async (req, res) => {
 });
 
 // POST re-sync / refresh
-app.post('/api/posts/sync', async (req, res) => {
+router.post('/posts/sync', async (req, res) => {
   try {
     const { postIds } = req.body;
     const posts = await getAllPosts();
@@ -213,7 +217,7 @@ app.post('/api/posts/sync', async (req, res) => {
     const updated = [];
     const errors = [];
 
-    // Parallel fetch for rapid sync
+    // Parallel fetch for rapid sync (capped at 5s timeout each)
     await Promise.all(
       targetPosts.map(async (post) => {
         try {
@@ -249,12 +253,16 @@ app.post('/api/posts/sync', async (req, res) => {
   }
 });
 
-// Serve client static files in production
+// Mount router on BOTH '/api' and '/' for complete Vercel serverless compatibility
+app.use('/api', router);
+app.use('/', router);
+
+// Serve client static files when running locally
 const DIST_DIR = path.join(__dirname, '..', 'dist');
 if (fs.existsSync(DIST_DIR)) {
   app.use(express.static(DIST_DIR));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) {
+    if (req.path.startsWith('/api') || req.path.startsWith('/posts') || req.path.startsWith('/health')) {
       return next();
     }
     res.sendFile(path.join(DIST_DIR, 'index.html'));

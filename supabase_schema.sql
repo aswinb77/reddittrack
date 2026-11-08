@@ -56,3 +56,4 @@ ON CONFLICT (id) DO UPDATE SET
   score = EXCLUDED.score,
   ups = EXCLUDED.ups,
   last_updated = NOW();
+
